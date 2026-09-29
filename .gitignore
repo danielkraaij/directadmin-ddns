@@ -1,3 +1,4 @@
 # Never commit real credentials
 config.php
 .vscode
+directadmin.credentials
