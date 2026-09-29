@@ -70,7 +70,17 @@ https://yourdomain.com/ddns/update.php?secret=YOUR_SECRET&ip=1.2.3.4
 https://yourdomain.com/ddns/update.php?secret=YOUR_SECRET&ip=2001:db8::1
 ```
 
-### Cronjob Example
+### Automatic Cronjob Installer (recommended)
+
+Install a cronjob on your server in one command (run as root, or with sudo available):
+
+```
+curl -s https://yourdomain.com/ddns/install-cron.sh | bash -s -- "https://yourdomain.com/ddns/update.php?secret=YOUR_SECRET"
+```
+
+This smoke-tests the endpoint, then writes `/etc/cron.d/directadmin-ddns` with hourly IPv4 and IPv6 update jobs. Optionally pass a schedule as second argument: `hourly` (default), `daily`, or a cron expression such as `"*/5 * * * *"`.
+
+### Manual Cronjob Example
 
 To update your IPv4 address automatically every hour, add the following to your crontab:
 
@@ -96,6 +106,7 @@ To update your IPv6 address automatically every hour, add the following to your 
 update.php          The DDNS endpoint. Upload this (plus config.php) to your web server.
 config.example.php  Configuration template. Copy to config.php and fill in your values.
 config.php          Your real credentials (git-ignored, never commit this).
+install-cron.sh     One-command cronjob installer for your DDNS client machine.
 ```
 
 ## License
