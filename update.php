@@ -97,6 +97,9 @@ function da_dns_request(array $config, array $params): array
     $url = sprintf('https://%s:%d/CMD_API_DNS_CONTROL', $host, $port);
     $verifySsl = !empty($config['DA_VERIFY_SSL']);
 
+    // Ask DirectAdmin for a JSON response ("records" array).
+    $params['json'] = 'yes';
+
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
@@ -121,9 +124,15 @@ function da_dns_request(array $config, array $params): array
         fail(401, 'DirectAdmin rejected the credentials (DA_USER / DA_PASS).');
     }
 
-    // On errors DirectAdmin may reply with a form-encoded "error=..." body.
+    // On errors DirectAdmin replies with a form-encoded "error=..." body.
     $decoded = json_decode((string) $body, true);
     if (!is_array($decoded)) {
+        $form = [];
+        parse_str((string) $body, $form);
+        if (!empty($form['error'])) {
+            $message = $form['error'] . ' ' . ($form['errorlevel'] ?? '');
+            fail(502, 'DirectAdmin returned an error: ' . trim($message));
+        }
         if ($status >= 200 && $status < 300) {
             fail(502, 'Unexpected response from DirectAdmin: ' . substr((string) $body, 0, 200));
         }
@@ -139,18 +148,19 @@ function da_dns_request(array $config, array $params): array
 }
 
 /**
- * Build the FQDN (without trailing dot) for a DNS-control JSON key.
+ * Normalise a record name from the DNS Control JSON output to its FQDN
+ * (lowercase, without trailing dot).
  */
-function key_to_fqdn(string $key, string $domain): string
+function record_name_to_fqdn(string $name, string $domain): string
 {
-    $key = rtrim($key, '.');
-    if ($key === '' || $key === '@' || strcasecmp($key, $domain) === 0) {
+    $name = strtolower(rtrim(trim($name), '.'));
+    if ($name === '' || $name === '@' || $name === $domain) {
         return $domain;
     }
-    if (str_ends_with(strtolower($key), '.' . strtolower($domain))) {
-        return $key;
+    if (str_ends_with($name, '.' . $domain)) {
+        return $name;
     }
-    return $key . '.' . $domain;
+    return $name . '.' . $domain;
 }
 
 /*
@@ -175,55 +185,64 @@ if ($record === '@') {
 
 $isIPv6 = filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false;
 $type = $isIPv6 ? 'AAAA' : 'A';
-$bucket = $isIPv6 ? 'ip6' : 'ip';
 
 $fqdn = $record === '' ? $domain : $record . '.' . $domain;
 
-// 1. Fetch the current zone records and look for an existing entry.
+// 1. Fetch the current zone records and look for matching entries.
 $zone = da_dns_request($config, ['domain' => $domain]);
 
-$currentValue = null;
-$existingKey = null;
-foreach ((array) ($zone[$bucket] ?? []) as $key => $value) {
-    if (!is_string($value)) {
+$upToDate = false;
+$staleRecord = null;
+foreach ((array) ($zone['records'] ?? []) as $rec) {
+    if (!is_array($rec) || strtoupper((string) ($rec['type'] ?? '')) !== $type) {
         continue;
     }
-    if (key_to_fqdn((string) $key, $domain) === $fqdn && strcasecmp(rtrim($value, '.'), $ip) === 0) {
-        $currentValue = $value;
-        $existingKey = (string) $key;
+    if (record_name_to_fqdn((string) ($rec['name'] ?? ''), $domain) !== $fqdn) {
+        continue;
+    }
+    $value = rtrim(trim((string) ($rec['value'] ?? '')), '.');
+    if (strcasecmp($value, $ip) === 0) {
+        $upToDate = true;
         break;
+    }
+    if ($staleRecord === null) {
+        $staleRecord = $rec;
     }
 }
 
-if ($currentValue !== null) {
+if ($upToDate) {
     echo "OK: {$type} record {$fqdn}. already points to {$ip}, nothing to do.\n";
     exit;
 }
 
-// 2. Remove a stale record of the same type, if present.
-$staleEntry = null;
-foreach ((array) ($zone[$bucket] ?? []) as $key => $value) {
-    if (is_string($value) && key_to_fqdn((string) $key, $domain) === $fqdn) {
-        $staleEntry = rtrim(key_to_fqdn((string) $key, $domain), '.') . '.: ' . $value;
-        break;
+// 2. Remove a stale record of the same type, if present. The "combined"
+//    field from the JSON response is exactly what the API expects for
+//    deletion (e.g. "name=home&value=1.2.3.4").
+if ($staleRecord !== null) {
+    // Deletion uses action=select with the record's "combined" string
+    // (e.g. "name=home&value=1.2.3.4") in its bucket field:
+    // "arecs0" for A records, "aaaarecs0" for AAAA records.
+    $bucket = $isIPv6 ? 'aaaarecs0' : 'arecs0';
+    $combined = (string) ($staleRecord['combined'] ?? '');
+    if ($combined === '') {
+        $combined = 'name=' . ($staleRecord['name'] ?? $record) . '&value=' . ($staleRecord['value'] ?? '');
     }
-}
-
-if ($staleEntry !== null) {
     da_dns_request($config, [
         'domain' => $domain,
-        'delete' => [$staleEntry],
+        'action' => 'select',
+        $bucket => $combined,
     ]);
 }
 
 // 3. Add the record with the new IP address.
 da_dns_request($config, [
     'domain' => $domain,
-    'add' => 'Add',
+    'action' => 'add',
+    'type' => $type,
     'name' => $record,
-    'record' => $ip,
+    'value' => $ip,
     'ttl' => $ttl,
 ]);
 
-$action = $staleEntry !== null ? 'updated' : 'created';
+$action = $staleRecord !== null ? 'updated' : 'created';
 echo "OK: {$type} record {$fqdn}. {$action} to {$ip}.\n";
