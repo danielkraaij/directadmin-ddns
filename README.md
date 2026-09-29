@@ -106,7 +106,7 @@ To update your IPv6 address automatically every hour, add the following to your 
 update.php          The DDNS endpoint. Upload this (plus config.php) to your web server.
 config.example.php  Configuration template. Copy to config.php and fill in your values.
 config.php          Your real credentials (git-ignored, never commit this).
-install-cron.sh     One-command cronjob installer for your DDNS client machine.
+install-cron.sh     One-command cron job installer for your DDNS client machine.
 ```
 
 ## License
